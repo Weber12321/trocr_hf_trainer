@@ -1,0 +1,5 @@
+datasets
+pandas
+pillow
+scikit-learn
+transformers
