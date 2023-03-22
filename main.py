@@ -154,11 +154,11 @@ def run_OCR():
     training_args = Seq2SeqTrainingArguments(
         predict_with_generate=True,
         evaluation_strategy="epoch",
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=8,
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=1,
         fp16=True,
         output_dir="./",
-        num_train_epochs=20,
+        num_train_epochs=100,
         logging_steps=10,
         save_steps=100,
         report_to="wandb",
@@ -297,9 +297,10 @@ def inference(img_path, ckpt):
     tokenizer = AutoTokenizer.from_pretrained("microsoft/layoutlmv3-base-chinese")
 
     model = VisionEncoderDecoderModel.from_pretrained(
-       "microsoft/trocr-small-printed"
+       ckpt
     )
 
+    print(model)
     image = Image.open(img_path).convert("RGB")
     pixel_values = processor(image, return_tensors="pt").pixel_values
     generated_ids = model.generate(pixel_values)
@@ -310,6 +311,6 @@ def inference(img_path, ckpt):
 
 if __name__ == '__main__':
     # run_OCR()
-    img_path= "data/weber_2.jpg"
+    img_path= "data/weber.png"
     ckpt = "model"
     inference(img_path, ckpt)
