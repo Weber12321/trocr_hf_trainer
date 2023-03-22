@@ -1,10 +1,13 @@
 import os
 
+import pytesseract
+
 import wandb
 import torch
 import pandas as pd
 from datasets import load_metric
-from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
+from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, \
+    AutoTokenizer
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 from PIL import Image
@@ -53,10 +56,11 @@ def get_decode_str(pred_ids, label_ids, processor):
     return pred_list, label_list
 
 class ZhPrintedDataset(Dataset):
-    def __init__(self, root_dir, df, processor, max_target_length=20):
+    def __init__(self, root_dir, df, processor, tokenizer, max_target_length=20):
         self.root_dir = root_dir
         self.df = df
         self.processor = processor
+        self.tokenizer = tokenizer
         self.max_target_length = max_target_length
 
     def __len__(self):
@@ -70,20 +74,19 @@ class ZhPrintedDataset(Dataset):
         image = Image.open(self.root_dir + file_name).convert("RGB")
         pixel_values = self.processor(image, return_tensors="pt").pixel_values
         # add labels (input_ids) by encoding the text
-        labels = self.processor.tokenizer(text,
-                                          padding="max_length",
-                                          max_length=self.max_target_length).input_ids
+        labels = self.tokenizer(text, padding="max_length", max_length=self.max_target_length).input_ids
         # important: make sure that PAD tokens are ignored by the loss function
-        labels = [label if label != self.processor.tokenizer.pad_token_id else -100 for label in labels]
+        labels = [label if label != self.tokenizer.pad_token_id else -100 for label in labels]
 
         encoding = {"pixel_values": pixel_values.squeeze(), "labels": torch.tensor(labels)}
         return encoding
 
 class IAMDataset(Dataset):
-    def __init__(self, root_dir, df, processor, max_target_length=128):
+    def __init__(self, root_dir, df, processor, tokenizer, max_target_length=128):
         self.root_dir = root_dir
         self.df = df
         self.processor = processor
+        self.tokenizer = tokenizer
         self.max_target_length = max_target_length
 
     def __len__(self):
@@ -108,30 +111,38 @@ class IAMDataset(Dataset):
 
 
 def run_OCR():
-    df = pd.read_csv('catalog_mingliu_12_320.csv', encoding='utf-8')
+    df = pd.read_csv('one_data.csv', encoding='utf-8')
+
+    pytesseract.pytesseract.tesseract_cmd = 'C:/Program Files/Tesseract-OCR/tesseract.exe'
 
     processor = TrOCRProcessor.from_pretrained(
-        "weights_with_custom_vocab"
+        "microsoft/trocr-small-printed"
     )
+    tokenizer = AutoTokenizer.from_pretrained("microsoft/layoutlmv3-base-chinese")
 
-    train_dataset = ZhPrintedDataset(root_dir='',
+    train_dataset = ZhPrintedDataset(root_dir='data/',
                                      df=df,
-                                     processor=processor)
-    eval_dataset = ZhPrintedDataset(root_dir='',
+                                     processor=processor,
+                                     tokenizer=tokenizer
+                                     )
+    eval_dataset = ZhPrintedDataset(root_dir='data/',
                                     df=df,
-                                    processor=processor)
+                                    processor=processor,
+                                    tokenizer=tokenizer
+                                    )
 
     model = VisionEncoderDecoderModel.from_pretrained(
-        "weights_with_custom_vocab")
+        "microsoft/trocr-small-printed")
 
     # set special tokens used for creating the decoder_input_ids from the labels
-    model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
-    model.config.pad_token_id = processor.tokenizer.pad_token_id
+    model.decoder.resize_token_embeddings(len(tokenizer))
+    model.config.decoder_start_token_id = tokenizer.cls_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
     # make sure vocab size is set correctly
-    model.config.vocab_size = model.config.decoder.vocab_size
+    model.config.vocab_size = tokenizer.vocab_size
 
     # set beam search parameters
-    model.config.eos_token_id = processor.tokenizer.sep_token_id
+    model.config.eos_token_id = tokenizer.sep_token_id
     model.config.max_length = 15
     model.config.early_stopping = True
     model.config.no_repeat_ngram_size = 3
@@ -142,17 +153,16 @@ def run_OCR():
 
     training_args = Seq2SeqTrainingArguments(
         predict_with_generate=True,
-        evaluation_strategy="steps",
+        evaluation_strategy="epoch",
         per_device_train_batch_size=16,
         per_device_eval_batch_size=8,
         fp16=True,
         output_dir="./",
-        num_train_epochs=100,
-        logging_steps=2,
-        save_steps=1000,
-        eval_steps=200,
+        num_train_epochs=20,
+        logging_steps=10,
+        save_steps=100,
         report_to="wandb",
-        run_name="trainer_fine_tuning"
+        run_name="weber_one_data"
     )
 
 
@@ -188,6 +198,7 @@ def run_OCR():
     )
     trainer.train()
     wandb.finish()
+    trainer.save_model(output_dir='model')
 
 
 def run_IAM():
@@ -276,5 +287,29 @@ def run_IAM():
     wandb.finish()
 
 
+def inference(img_path, ckpt):
+    # config = VisionEncoderDecoderConfig.from_json_file(ckpt+"/config.json")
+    pytesseract.pytesseract.tesseract_cmd = 'C:/Program Files/Tesseract-OCR/tesseract.exe'
+
+    processor = TrOCRProcessor.from_pretrained(
+        "microsoft/trocr-small-printed"
+    )
+    tokenizer = AutoTokenizer.from_pretrained("microsoft/layoutlmv3-base-chinese")
+
+    model = VisionEncoderDecoderModel.from_pretrained(
+       "microsoft/trocr-small-printed"
+    )
+
+    image = Image.open(img_path).convert("RGB")
+    pixel_values = processor(image, return_tensors="pt").pixel_values
+    generated_ids = model.generate(pixel_values)
+    generated_text = \
+        tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+    print(generated_text)
+    print(len(generated_text))
+
 if __name__ == '__main__':
-    run_OCR()
+    # run_OCR()
+    img_path= "data/weber_2.jpg"
+    ckpt = "model"
+    inference(img_path, ckpt)
